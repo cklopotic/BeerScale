@@ -1,19 +1,17 @@
 /*
-  //****  ADDITIONAL ITEMS TO INSTALL...........
-  //
-  //  1) Board Manager: Add ExpressIf board support for ESP32-S3
-  //      - After Board support is installed use: "ESP32S3 Dev Module" as your board
-  //  2) Additional Libaries required:
+  //    Setup using PlatformIO in VS Code (ESP32-S3-DevKitC in Arduino Mode)
+  // 
+  //****  ADDITIONAL Libraries TO INSTALL...........
   //      - "Adafruit ILI9341" (for the display). Install additional libraries when prompted.
   //      - "Adafruit ImageReader Library" Install additional libarires when prompted.
-  //      - "HX711" by Bogdan Necula github.com/bogde/HX711 (for the scale)
-  //  3) Modified Adafruit FT6206 (for the capacitive touchscreen)
-  //      -default library does not let you select your I2C pins (if using Arduino hardware that has these set, the std library would be fine)
+  //      - "HX711" by Rob Tillaart
+  //      - Adafruit FT6206 (for the capacitive touchscreen)
   //
 */
 
 #include <EEPROM.h>
 #include <HX711.h>
+#include <BeerScale.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
@@ -23,19 +21,28 @@
 
 
 //******   Scale Setup   *****
-HX711 scale;
+BeerScale beerScale;
 //HX711 Scale circuit wiring
-const int SCALE_DOUT_PIN = 46;
-const int SCALE_SCK_PIN = 3;
+const uint8_t SCALE_DOUT_PIN = 46;
+const uint8_t SCALE_SCK_PIN = 3;
 
 // Scale Adjustment settings
 long scaleOffset; 
-long scaleDivider;
-const float KNOWN_WEIGHT_LBS = 120.0;
-const float EMPTY_WEIGHT_LBS = 33.0;
-const float FULL_WEIGHT_LBS = 160.0;
-#define OZ_PER_LB 16
-#define OZ_PER_UNIT 12
+float scaleDivider;
+const uint16_t KNOWN_WEIGHT_LBS = 120;  //used for scale calibration
+
+KegSize_t halfBarrel = {
+  .emptyWeight = 33.0,
+  .fullWeight = 160.0
+};
+
+KegSize_t quarterBarrel = {
+  .emptyWeight = 22.0,
+  .fullWeight = 87.0
+};
+
+KegSize_t activeKegSize;
+BeerStatus_t status;
 
 // Configuration for CS and DC pins
 #define TFT_CS   10
@@ -77,20 +84,12 @@ int eep_add_offset = 0;
 int eep_add_divider = 8;
 int eep_add_logoIndex = 16;
 
-// Structure to store status values
-struct Status {
-  float weight_lbs;
-  float level_percent;
-  float units_remain;
-};
-
 enum screenStates { BLANK, LOGO, CHANGE_LOGO, CALIBRATE_SCALE } displayScreen = BLANK;
 
 
 // Function prototypes
 void saveScaleParams();
 void readScaleParams();
-void update(Status status);
 void updateBackground();
 void draw_percent_2_GaugeY1(int percent);
 void changeBeerLogo();
@@ -102,8 +101,6 @@ int getThumbnailIndexFromTouch(TS_Point p);
 void drawTareButton(int color = ILI9341_LIGHTGREY);
 void drawCalButton(int color = ILI9341_LIGHTGREY);
 
-Status status; //main status variable to use
-
 // Main loop non-blocking delay routine variables
 unsigned long start_time; 
 unsigned long timed_event;
@@ -111,35 +108,40 @@ unsigned long current_time;
 
 // the setup function runs once when you press reset or power the board
 void setup() {
-  EEPROM.begin(EEPROM_SIZE);
-  EEPROM.get(eep_add_logoIndex, logoIndex);
-  constrain(logoIndex,1,9);
-  readScaleParams();
   Serial.begin(115200);
-  printf("Initializing the scale\n");
-  
-  // Initialize and setup the scale
-  scale.begin(SCALE_DOUT_PIN, SCALE_SCK_PIN);
-  scale.set_scale(scaleDivider);
-  scale.set_offset(scaleOffset);
 
   // Setup SPI bus using hardware SPI
   SPI.begin();
   tft.begin(SPI_FREQUENCY);
   tft.setRotation(0);  // Set rotation to 0 degrees
 
+  // Read saved settings
+  EEPROM.begin(EEPROM_SIZE);
+  EEPROM.get(eep_add_logoIndex, logoIndex);
+  constrain(logoIndex,1,9);
+  readScaleParams();
+
+  activeKegSize = halfBarrel;
+  
   // Setup SD card
   if(!SD.begin(SD_CS, SD_SCK_MHZ(25))) { // ESP32 requires 25 MHz limit
-    printf("SD begin() failed\n");
-    for(;;); // Fatal error, do not continue
+    Serial.println("SD begin() failed");
+    //for(;;); // Fatal error, do not continue
   }
+
+  // Initialize and setup the scale
+  Serial.println("Initializing the scale");
+  beerScale.init(SCALE_DOUT_PIN, SCALE_SCK_PIN);
+  beerScale.set_offset(scaleOffset);
+  beerScale.set_scale(scaleDivider);
+
 
   // Setup Touch Screen
   if (!ts.begin(40)) { 
-    printf("Unable to start touchscreen.\n");
+    Serial.println("Unable to start touchscreen.");
   } 
   else { 
-    printf("Touchscreen started.\n"); 
+    Serial.println("Touchscreen started."); 
   }
 
   // Clear the screen
@@ -180,7 +182,7 @@ void loop() {
         if((p.x > GAUGEx) && (p.x < tft.width())) {
           if ((p.y > GAUGEy) && (p.y <= tft.height())) {
             // calibrate scale code here
-            printf("Calibrate Scale hit\n");
+            Serial.println("Calibrate Scale hit");
             paintCalScale();
           }
         }
@@ -190,15 +192,12 @@ void loop() {
         if((p.x > TARE_X) && (p.x < (TARE_X + BUTTON_W))) {
           if ((p.y > TARE_Y) && (p.y <= (TARE_Y + BUTTON_H))) {
             // Tare scale 
-            printf("Tare Scale\n");
+            Serial.println("Tare Scale");
             drawTareButton(ILI9341_DARKGREY);
-            if (scale.wait_ready_timeout(1000)) {
-                scale.set_scale(); // clear out any previous offsets and dividers
-                scaleOffset = scale.read_average(10);
-                scale.set_offset(scaleOffset);
-                printf(">>>> Scale Offset: %d\n",scaleOffset);
-                takeReading();                
-            }
+            scaleOffset = beerScale.tare();
+            Serial.print(">>Scale offset:");
+            Serial.println(scaleOffset);
+            takeReading();
             drawTareButton();
           }
         }
@@ -206,15 +205,12 @@ void loop() {
         if((p.x > CAL_X) && (p.x < (CAL_X + BUTTON_W))) {
           if ((p.y > CAL_Y) && (p.y <= (CAL_Y + BUTTON_H))) {
             // Calibrate scale 
-            printf("Scale Calibration: 120 lbs\n");
+            Serial.println("Scale Calibration: 120 lbs");
             drawCalButton(ILI9341_DARKGREY);
-            if (scale.wait_ready_timeout(1000)) {
-                long knownWeight = scale.get_units(10);
-                scaleDivider = (long)((float)knownWeight / KNOWN_WEIGHT_LBS);
-                scale.set_scale(scaleDivider);
-                printf(">>>> Scaling factor: %d\n", scaleDivider);
-                takeReading();
-            }
+            scaleDivider = beerScale.setKnownWeight(KNOWN_WEIGHT_LBS);
+            Serial.print(">>Scale divider: ");
+            Serial.println(scaleDivider);
+            takeReading();
             drawCalButton();
           }
         }
@@ -222,7 +218,7 @@ void loop() {
         if((p.x > CANCEL_X) && (p.x < (CANCEL_X + BUTTON_W))) {
           if ((p.y > CANCEL_Y) && (p.y <= (CANCEL_Y + BUTTON_H))) {
             // Cancel button hit
-            printf("Scale Calibration Canceled\n");
+            Serial.println("Scale Calibration Canceled");
             readScaleParams(); //restore previous values;
             loadBeerLogo();
             }
@@ -231,7 +227,7 @@ void loop() {
         if((p.x > SAVE_X) && (p.x < (SAVE_X + BUTTON_W))) {
           if ((p.y > SAVE_Y) && (p.y <= (SAVE_Y + BUTTON_H))) {
             // SAVE  button hit
-            printf("Scale Calibration Saved\n");
+            Serial.println("Scale Calibration Saved");
             saveScaleParams();
             }
           }         
@@ -243,9 +239,10 @@ void loop() {
             logoIndex = index;
             EEPROM.put(eep_add_logoIndex, logoIndex);
             if(EEPROM.commit()){
-            printf(">>>> Logo Value saved. %d\n",logoIndex);
+            Serial.print(">>>> Logo Value saved. LogoIndex: ");
+            Serial.println(logoIndex);
             } else {
-              printf("ERROR: Logo value not saved\n");
+              Serial.println("ERROR: Logo value not saved");
             }
           }
         }
@@ -286,27 +283,11 @@ void draw_percent_2_GaugeY1(float percent) {
 }
 
 void takeReading(){
-  if (scale.wait_ready_timeout(1000)) {
-      status.weight_lbs = scale.get_units(10);
-      //printf("Weight: %.1f\n",status.weight_lbs);
-      status.weight_lbs = status.weight_lbs - EMPTY_WEIGHT_LBS; //subtract off the weight of the keg to get the weight of the beer
-      status.level_percent = (status.weight_lbs / (FULL_WEIGHT_LBS - EMPTY_WEIGHT_LBS)) * 100;
-      status.units_remain = (status.weight_lbs * OZ_PER_LB / OZ_PER_UNIT);
-          
-      //printf("Beer Weight (lbs): %.2f\n", status.weight_lbs);
-      //printf("Level Percent: %.1f%%\n", status.level_percent);
-      //printf("Units Remain: %.2f\n", status.units_remain);
-      printf(".s.");
-
-      //update the display
-      update(status);
-    } else {
-        printf("HX711 not found.\n");
-    }
-}
-
-void update(Status status) {
-
+    //Serial.print("Raw weight: ");
+    //Serial.print(beerScale.getUnitWeight());
+    //Serial.println(" lbs");
+    beerScale.getBeerRemaining(&status, &activeKegSize);    
+    
     // Clear out Status text and update values
     tft.fillRect(150, 0, tft.width() - 150, ROW_HEIGHT * 2, ILI9341_BLACK);
 
@@ -329,7 +310,7 @@ void update(Status status) {
 }
 
 void changeBeerLogo(){
-    printf("Beer Logo hit \n");
+    Serial.println("Beer Logo hit");
     clearBeerLogo();
     displayScreen = CHANGE_LOGO;
     //load up the 9 thumbnails, 3x3 grid display
@@ -347,7 +328,7 @@ void changeBeerLogo(){
     // Embedded Logo
     //tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
     delay(1500);
-    printf("Delay done, select logo\n");
+    Serial.println("Delay done, select logo");
 }
 
 void clearBeerLogo(){         
@@ -393,9 +374,12 @@ void saveScaleParams(){
   EEPROM.put(eep_add_offset, scaleOffset);
   EEPROM.put(eep_add_divider, scaleDivider);
   if(EEPROM.commit()){
-    printf(">>>> Scale Values saved. %d, %d\n",scaleOffset, scaleDivider);
+    Serial.print(">>>> Scale Values saved. Offset: ");
+    Serial.print(scaleOffset);
+    Serial.print(", Divider: ");
+    Serial.println(scaleDivider);
   } else {
-    printf("ERROR: Values not saved\n");
+    Serial.println("ERROR: Values not saved");
   }
   loadBeerLogo();
 }
@@ -403,6 +387,10 @@ void saveScaleParams(){
 void readScaleParams(){
   EEPROM.get(eep_add_offset, scaleOffset);
   EEPROM.get(eep_add_divider,scaleDivider);
+  Serial.print("EEPROM Read>> Scale Offset: ");
+  Serial.print(scaleOffset);
+  Serial.print(", Divider: ");
+  Serial.println(scaleDivider);
 }  
 
 int getThumbnailIndexFromTouch(TS_Point p){
