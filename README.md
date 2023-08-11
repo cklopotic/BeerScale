@@ -11,6 +11,7 @@ This has a small 2.8" TFT display with a capactivie touch screen that can be emb
 
 - Check out the docs & pictures sections to see how to integrate the hardware along with some example and reference files to make your own custom flavor.
 
+- On main screen, you can touch (might have to hold for a bit) the scale area to calibration the scale.  Touch and hold the main beer logo to select a different beer (if you have the SD card loaded with different images).
 ## Sorry, this is a work in Progress...
 - Code is a bit of a mess. Needs some refactoring.
 - Documentation is crude, dig around you should find what you need
