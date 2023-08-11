@@ -56,6 +56,7 @@ BeerStatus_t status;
 #define SD_CS    16
 SdFat SD;         // SD card filesystem
 Adafruit_ImageReader reader(SD); // Image-reader object, pass in SD filesys
+bool sdCardPresent;
 
 // Create the display
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
@@ -124,11 +125,13 @@ void setup() {
   activeKegSize = halfBarrel;
   
   // Setup SD card
-  if(!SD.begin(SD_CS, SD_SCK_MHZ(25))) { // ESP32 requires 25 MHz limit
+  sdCardPresent = SD.begin(SD_CS, SD_SCK_MHZ(25));  // ESP32 requires 25 MHz limit
+  if(sdCardPresent){
+    Serial.println("SD card initialized.");
+  } else {
     Serial.println("SD begin() failed");
-    //for(;;); // Fatal error, do not continue
   }
-
+  
   // Initialize and setup the scale
   Serial.println("Initializing the scale");
   beerScale.init(SCALE_DOUT_PIN, SCALE_SCK_PIN);
@@ -172,10 +175,12 @@ void loop() {
     switch (displayScreen)
     {
       case LOGO: //normal run mode screen
-        // check if touch in on Beer Logo
-        if((p.x > LOGOx1) && (p.x < (LOGOx1 + LOGO_WIDTH))) {
-          if ((p.y > LOGOy1) && (p.y <= (LOGOy1 + LOGO_HEIGHT))) {
-            changeBeerLogo();
+        // check if touch in on Beer Logo if an SD card is present
+        if (sdCardPresent){
+          if((p.x > LOGOx1) && (p.x < (LOGOx1 + LOGO_WIDTH))) {
+            if ((p.y > LOGOy1) && (p.y <= (LOGOy1 + LOGO_HEIGHT))) {
+                changeBeerLogo();
+            }
           }
         }
         // check if touch is on scale
@@ -283,9 +288,6 @@ void draw_percent_2_GaugeY1(float percent) {
 }
 
 void takeReading(){
-    //Serial.print("Raw weight: ");
-    //Serial.print(beerScale.getUnitWeight());
-    //Serial.println(" lbs");
     beerScale.getBeerRemaining(&status, &activeKegSize);    
     
     // Clear out Status text and update values
@@ -323,10 +325,13 @@ void changeBeerLogo(){
           reader.drawBMP(filenameThumb, tft, thumb_x,thumb_y);
       }
     }
-    // SD card
-    //reader.drawBMP("/busch2.bmp", tft, LOGOx1,LOGOy1);
-    // Embedded Logo
-    //tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
+    // draw a frame around the current logo to indicate current selection
+    int col = (logoIndex -1) % 3;
+    int row = (logoIndex-1)/3;
+    int thumb_x = col * THUMB_W + LOGOx1 + 1;
+    int thumb_y = (row * THUMB_H) + LOGOy1 + 1;
+    tft.drawRect(thumb_x, thumb_y, THUMB_W - 2,THUMB_H - 2, ILI9341_RED);
+
     delay(1500);
     Serial.println("Delay done, select logo");
 }
@@ -337,11 +342,12 @@ void clearBeerLogo(){
 }
 
 void loadBeerLogo(){
-  // Embedded Logo
-  //tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
-  // SD card
-  filenameLogo[5] = '0' + logoIndex;
-  reader.drawBMP(filenameLogo, tft, LOGOx1,LOGOy1);
+  if (sdCardPresent){
+    filenameLogo[5] = '0' + logoIndex;
+    reader.drawBMP(filenameLogo, tft, LOGOx1,LOGOy1);
+  } else { // Embedded Logo
+    tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
+  }
   displayScreen = LOGO;
 }
 
