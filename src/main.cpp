@@ -1,24 +1,54 @@
-/*
-  //    Setup using PlatformIO in VS Code (ESP32-S3-DevKitC in Arduino Mode)
-  // 
-  //****  ADDITIONAL Libraries TO INSTALL...........
-  //      - "Adafruit ILI9341" (for the display). Install additional libraries when prompted.
-  //      - "Adafruit ImageReader Library" Install additional libarires when prompted.
-  //      - "HX711" by Rob Tillaart
-  //      - Adafruit FT6206 (for the capacitive touchscreen)
-  //
-*/
+
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncElegantOTA.h>
+#include "SPIFFS.h"
 
 #include <EEPROM.h>
 #include <HX711.h>
 #include <BeerScale.h>
+#include <BeerScreen.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <Adafruit_ImageReader.h> // Image-reading functions
 #include <Adafruit_FT6206.h>
-#include "ImageData.h"
+#include "ImageHelper.h"
 
+//Wifi setup
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
+
+// Search for parameter in HTTP POST request
+const char* PARAM_INPUT_1 = "ssid";
+const char* PARAM_INPUT_2 = "pass";
+const char* PARAM_INPUT_3 = "ip";
+const char* PARAM_INPUT_4 = "gateway";
+
+//Variables to save values from HTML form
+String ssid;
+String pass;
+String ip;
+String gateway;
+
+// File paths to save input values permanently
+const char* ssidPath = "/ssid.txt";
+const char* passPath = "/pass.txt";
+const char* ipPath = "/ip.txt";
+const char* gatewayPath = "/gateway.txt";
+
+IPAddress localIP;
+//IPAddress localIP(192, 168, 1, 200); // hardcoded
+
+// Set your Gateway IP address
+IPAddress localGateway;
+//IPAddress localGateway(192, 168, 1, 1); //hardcoded
+IPAddress subnet(255, 255, 0, 0);
+
+// Timer variables
+unsigned long previousMillis = 0;
+const long interval = 10000;  // interval to wait for Wi-Fi connection (milliseconds)
 
 //******   Scale Setup   *****
 BeerScale beerScale;
@@ -27,22 +57,10 @@ const uint8_t SCALE_DOUT_PIN = 46;
 const uint8_t SCALE_SCK_PIN = 3;
 
 // Scale Adjustment settings
-long scaleOffset; 
-float scaleDivider;
 const uint16_t KNOWN_WEIGHT_LBS = 120;  //used for scale calibration
 
-KegSize_t halfBarrel = {
-  .emptyWeight = 33.0,
-  .fullWeight = 160.0
-};
-
-KegSize_t quarterBarrel = {
-  .emptyWeight = 22.0,
-  .fullWeight = 87.0
-};
-
-KegSize_t activeKegSize;
 BeerStatus_t status;
+BeerStatus_t previousStatus;
 
 // Configuration for CS and DC pins
 #define TFT_CS   10
@@ -64,66 +82,300 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 // The FT6206 uses hardware I2C (SCL/SDA) AKA: the touchscreen
 Adafruit_FT6206 ts = Adafruit_FT6206();
 
-// Constants
-#define ROW_HEIGHT 20
-#define GAUGE_W ROW_HEIGHT * 2
-#define GAUGEx (tft.width() - GAUGE_W)
-#define GAUGEy (ROW_HEIGHT * 2)
-#define LOGOx1 0
-#define LOGOy1 (ROW_HEIGHT * 2)
-#define LOGO_WIDTH (tft.width() - ROW_HEIGHT * 2)
-#define LOGO_HEIGHT (tft.height() - ROW_HEIGHT * 2)
 
-// Font
-#define FONT_HEIGHT 8 //font size 1 = 6x8, font size 2 = 12x16
 
 
 //*****   Memory Setup   ******
-#define EEPROM_SIZE 32 //number of bytes needed (long data type is 4 bytes)
-                      // sizeof(scaleOffset) + sizeof(scaleDivider) + logoIndex
-int eep_add_offset = 0;
-int eep_add_divider = 8;
-int eep_add_logoIndex = 16;
+#define EEPROM_SIZE 32 //number of bytes needed (long data type is 4 bytes, floats & doubles are 8)
+                      // sizeof(scaleOffset) + sizeof(scaleDivider) + logoIndex + KegSizeIndex
+int eep_add_offset = 0; //scale offset
+int eep_add_divider = 8; //scale divider
+int eep_add_logoIndex = 16; //logo selected
+int eep_add_kegSizeIndex = 20; //keg size
 
 enum screenStates { BLANK, LOGO, CHANGE_LOGO, CALIBRATE_SCALE } displayScreen = BLANK;
 
-
 // Function prototypes
-void saveScaleParams();
-void readScaleParams();
-void updateBackground();
-void draw_percent_2_GaugeY1(int percent);
-void changeBeerLogo();
+void drawBeerSelection();
 void clearBeerLogo();
 void loadBeerLogo();
-void paintCalScale();
 void takeReading();
 int getThumbnailIndexFromTouch(TS_Point p);
-void drawTareButton(int color = ILI9341_LIGHTGREY);
-void drawCalButton(int color = ILI9341_LIGHTGREY);
 
 // Main loop non-blocking delay routine variables
 unsigned long start_time; 
 unsigned long timed_event;
 unsigned long current_time;
 
+//functions 
+//TODO: can/should get moved to other files once refactored
+// Initialize SPIFFS
+void initSPIFFS() {
+  if (!SPIFFS.begin(true)) {
+    Serial.println("An error has occurred while mounting SPIFFS");
+  }
+  Serial.println("SPIFFS mounted successfully");
+  Serial.print("Total space: ");
+  Serial.println(SPIFFS.totalBytes());
+  Serial.print("Used space: ");
+  Serial.println(SPIFFS.usedBytes());
+
+}
+
+// Read File from SPIFFS
+String readFile(fs::FS &fs, const char * path){
+  Serial.printf("Reading file: %s\r\n", path);
+
+  File file = fs.open(path);
+  if(!file || file.isDirectory()){
+    Serial.println("- failed to open file for reading");
+    return String();
+  }
+  
+  String fileContent;
+  while(file.available()){
+    fileContent = file.readStringUntil('\n');
+    break;     
+  }
+  return fileContent;
+}
+
+// Write file to SPIFFS
+void writeFile(fs::FS &fs, const char * path, const char * message){
+  Serial.printf("Writing file: %s\r\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if(!file){
+    Serial.println("- failed to open file for writing");
+    return;
+  }
+  if(file.print(message)){
+    Serial.println("- file written");
+  } else {
+    Serial.println("- write failed");
+  }
+}
+
+// Initialize WiFi
+bool initWiFi() {
+  if(ssid=="" || ip==""){
+    Serial.println("Undefined SSID or IP address.");
+    return false;
+  }
+
+  WiFi.mode(WIFI_STA);
+  localIP.fromString(ip.c_str());
+  localGateway.fromString(gateway.c_str());
+
+
+  if (!WiFi.config(localIP, localGateway, subnet)){
+    Serial.println("STA Failed to configure");
+    return false;
+  }
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  Serial.println("Connecting to WiFi...");
+
+  unsigned long currentMillis = millis();
+  previousMillis = currentMillis;
+
+  while(WiFi.status() != WL_CONNECTED) {
+    currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+      Serial.println("Failed to connect.");
+      return false;
+    }
+  }
+
+  Serial.println(WiFi.localIP());
+  return true;
+}
+
+void notifyClients(BeerStatus_t status) {
+  String dataPayload;
+  dataPayload = "weight:";
+  dataPayload += status.weight_lbs;
+  dataPayload += ",units:";
+  dataPayload += status.units_remain;
+  dataPayload += ",percent:";
+  dataPayload += status.level_percent;
+  Serial.println(dataPayload);
+  ws.textAll(dataPayload);
+}
+
+void handleWebSocketMessage(void *arg, uint8_t *data, size_t len) {
+  AwsFrameInfo *info = (AwsFrameInfo*)arg;
+  if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
+    data[len] = 0;
+    if (strcmp((char*)data, "toggle") == 0) {
+      notifyClients(status);
+    }
+  }
+}
+
+void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type,
+             void *arg, uint8_t *data, size_t len) {
+  switch (type) {
+    case WS_EVT_CONNECT:
+      Serial.printf("WebSocket client #%u connected from %s\n", client->id(), client->remoteIP().toString().c_str());
+      break;
+    case WS_EVT_DISCONNECT:
+      Serial.printf("WebSocket client #%u disconnected\n", client->id());
+      break;
+    case WS_EVT_DATA:
+      handleWebSocketMessage(arg, data, len);
+      break;
+    case WS_EVT_PONG:
+    case WS_EVT_ERROR:
+      break;
+  }
+}
+
+void initWebSocket() {
+  ws.onEvent(onEvent);
+  server.addHandler(&ws);
+}
+
+// Callback processor for main webpage. 
+String processor(const String& var) {
+  if(var == "STATE") {
+   
+  }
+  return String();
+}
+
+
 // the setup function runs once when you press reset or power the board
 void setup() {
+  
   Serial.begin(115200);
-
+  Serial.println("Startup Initiated");
+  
+  initSPIFFS();
+  
+  // Load values saved in SPIFFS
+  ssid = readFile(SPIFFS, ssidPath);
+  pass = readFile(SPIFFS, passPath);
+  ip = readFile(SPIFFS, ipPath);
+  gateway = readFile (SPIFFS, gatewayPath);
+  Serial.println(ssid);
+  //Serial.println(pass);
+  Serial.println(ip);
+  Serial.println(gateway);
+  
+  Serial.println("SPI bus starting");
   // Setup SPI bus using hardware SPI
   SPI.begin();
   tft.begin(SPI_FREQUENCY);
   tft.setRotation(0);  // Set rotation to 0 degrees
 
+  // Clear the screen
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setCursor(17, 6);
+  tft.setTextColor(ILI9341_BLUE);
+  tft.setTextSize(1);
+  tft.println("Attempting WiFi Connection");
+  tft.print("SSID: ");
+  tft.println(ssid);
+  tft.print("IP: ");
+  tft.println(ip);
+    
+
+  if(initWiFi()) {
+    initWebSocket();
+
+    // Route for root / web page
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(SPIFFS, "/BeerScale.html", "text/html", false, processor);
+    });
+    server.serveStatic("/", SPIFFS, "/");    
+
+    //server.onFileUpload()
+
+    AsyncElegantOTA.begin(&server);    // Start ElegantOTA
+    server.begin();
+  }
+  else {
+    // Connect to Wi-Fi network with SSID and password
+    Serial.println("Setting AP (Access Point)");
+    // NULL sets an open Access Point
+    WiFi.softAP("BEERSCALE-WIFI-MANAGER", NULL);
+
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP); 
+    // Clear the screen
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setCursor(17, 6);
+    tft.setTextColor(ILI9341_BLUE);
+    tft.setTextSize(1);
+    tft.println("WiFi Connection Failed");
+    tft.println("Running as Access Point");
+    tft.println("Connect to this Wifi &");
+    tft.println("on web broswer url:");
+    tft.println(IP);
+    delay(6000);
+
+    // Web Server Root URL
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send(SPIFFS, "/wifimanager.html", "text/html");
+    });
+    
+    server.serveStatic("/", SPIFFS, "/");
+    
+    server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
+      int params = request->params();
+      for(int i=0;i<params;i++){
+        AsyncWebParameter* p = request->getParam(i);
+        if(p->isPost()){
+          // HTTP POST ssid value
+          if (p->name() == PARAM_INPUT_1) {
+            ssid = p->value().c_str();
+            Serial.print("SSID set to: ");
+            Serial.println(ssid);
+            // Write file to save value
+            writeFile(SPIFFS, ssidPath, ssid.c_str());
+          }
+          // HTTP POST pass value
+          if (p->name() == PARAM_INPUT_2) {
+            pass = p->value().c_str();
+            Serial.print("Password set to: ");
+            Serial.println(pass);
+            // Write file to save value
+            writeFile(SPIFFS, passPath, pass.c_str());
+          }
+          // HTTP POST ip value
+          if (p->name() == PARAM_INPUT_3) {
+            ip = p->value().c_str();
+            Serial.print("IP Address set to: ");
+            Serial.println(ip);
+            // Write file to save value
+            writeFile(SPIFFS, ipPath, ip.c_str());
+          }
+          // HTTP POST gateway value
+          if (p->name() == PARAM_INPUT_4) {
+            gateway = p->value().c_str();
+            Serial.print("Gateway set to: ");
+            Serial.println(gateway);
+            // Write file to save value
+            writeFile(SPIFFS, gatewayPath, gateway.c_str());
+          }
+          //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+        }
+      }
+      request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
+      delay(3000);
+      ESP.restart();
+    });
+    server.begin();
+  }
+ 
+
+  Serial.println("Reading Saved Settings");
   // Read saved settings
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.get(eep_add_logoIndex, logoIndex);
   constrain(logoIndex,1,9);
-  readScaleParams();
-
-  activeKegSize = halfBarrel;
-  
+    
   // Setup SD card
   sdCardPresent = SD.begin(SD_CS, SD_SCK_MHZ(25));  // ESP32 requires 25 MHz limit
   if(sdCardPresent){
@@ -134,10 +386,7 @@ void setup() {
   
   // Initialize and setup the scale
   Serial.println("Initializing the scale");
-  beerScale.init(SCALE_DOUT_PIN, SCALE_SCK_PIN);
-  beerScale.set_offset(scaleOffset);
-  beerScale.set_scale(scaleDivider);
-
+  beerScale.init(SCALE_DOUT_PIN, SCALE_SCK_PIN, eep_add_offset, eep_add_divider, eep_add_kegSizeIndex);
 
   // Setup Touch Screen
   if (!ts.begin(40)) { 
@@ -152,14 +401,15 @@ void setup() {
   // Load logo image
   loadBeerLogo();
   
-  timed_event = 1000; // after 1000 ms trigger the event
+  timed_event = 2000; // after 1000 ms trigger the event
   current_time = millis();
   start_time = current_time;
+  Serial.println("Startup Completed!");
 }
 
 // the loop function runs over and over again forever
 void loop() {
-
+  ws.cleanupClients();
   current_time = millis(); // update the timer every cycle
   
   //Look for touches on screen
@@ -179,7 +429,7 @@ void loop() {
         if (sdCardPresent){
           if((p.x > LOGOx1) && (p.x < (LOGOx1 + LOGO_WIDTH))) {
             if ((p.y > LOGOy1) && (p.y <= (LOGOy1 + LOGO_HEIGHT))) {
-                changeBeerLogo();
+                drawBeerSelection();
             }
           }
         }
@@ -188,7 +438,9 @@ void loop() {
           if ((p.y > GAUGEy) && (p.y <= tft.height())) {
             // calibrate scale code here
             Serial.println("Calibrate Scale hit");
-            paintCalScale();
+            clearBeerLogo();
+            displayScreen = CALIBRATE_SCALE;
+            draw_calibration_screen(&tft);
           }
         }
         break;
@@ -198,12 +450,10 @@ void loop() {
           if ((p.y > TARE_Y) && (p.y <= (TARE_Y + BUTTON_H))) {
             // Tare scale 
             Serial.println("Tare Scale");
-            drawTareButton(ILI9341_DARKGREY);
-            scaleOffset = beerScale.tare();
-            Serial.print(">>Scale offset:");
-            Serial.println(scaleOffset);
+            drawTareButton(&tft, ILI9341_DARKGREY);
+            beerScale.tare();
             takeReading();
-            drawTareButton();
+            drawTareButton(&tft);
           }
         }
         // check if touch is on 120 lbs button
@@ -211,12 +461,10 @@ void loop() {
           if ((p.y > CAL_Y) && (p.y <= (CAL_Y + BUTTON_H))) {
             // Calibrate scale 
             Serial.println("Scale Calibration: 120 lbs");
-            drawCalButton(ILI9341_DARKGREY);
-            scaleDivider = beerScale.setKnownWeight(KNOWN_WEIGHT_LBS);
-            Serial.print(">>Scale divider: ");
-            Serial.println(scaleDivider);
+            drawCalButton(&tft, ILI9341_DARKGREY);
+            beerScale.setKnownWeight(KNOWN_WEIGHT_LBS);
             takeReading();
-            drawCalButton();
+            drawCalButton(&tft);
           }
         }
         // check if touch is on cancel button
@@ -224,7 +472,7 @@ void loop() {
           if ((p.y > CANCEL_Y) && (p.y <= (CANCEL_Y + BUTTON_H))) {
             // Cancel button hit
             Serial.println("Scale Calibration Canceled");
-            readScaleParams(); //restore previous values;
+            beerScale.readScaleParams(); //restore previous values;
             loadBeerLogo();
             }
           }
@@ -233,7 +481,8 @@ void loop() {
           if ((p.y > SAVE_Y) && (p.y <= (SAVE_Y + BUTTON_H))) {
             // SAVE  button hit
             Serial.println("Scale Calibration Saved");
-            saveScaleParams();
+            beerScale.saveScaleParams();
+            loadBeerLogo();
             }
           }         
         break;
@@ -243,6 +492,8 @@ void loop() {
           if (logoIndex != index){
             logoIndex = index;
             EEPROM.put(eep_add_logoIndex, logoIndex);
+            //TODO: allow for different keg sizes.
+            beerScale.setKegSize(0); //fixed size to a half barrel
             if(EEPROM.commit()){
             Serial.print(">>>> Logo Value saved. LogoIndex: ");
             Serial.println(logoIndex);
@@ -263,55 +514,17 @@ void loop() {
 }
 
 // Function implementations
-
-void draw_percent_2_GaugeY1(float percent) {
-    int pixel_total = tft.height() - GAUGEy;
-    percent = constrain(percent, 0, 100);
-    int gaugeY1 = tft.height() - ((pixel_total * percent) / 100);
-    int red = 255 - map(percent, 0, 100, 0, 255);
-    int green = map(percent, 0, 100, 0, 255);
-
-    // Draw placeholder/Background for Gauge
-    tft.fillRect(GAUGEx, GAUGEy, GAUGE_W, gaugeY1, ILI9341_BLACK);
-    // Draw filled portion
-    tft.fillRect(GAUGEx, gaugeY1, GAUGE_W, tft.height() - gaugeY1, tft.color565(red, green, 0));
-    // Draw text
-    if (percent > 98) {
-      tft.setCursor(GAUGEx + 2, gaugeY1);
-    } else {
-      tft.setCursor(GAUGEx + 2, gaugeY1 - 13);
-    }
-    tft.setTextColor(ILI9341_WHITE);
-    tft.setTextSize(1);
-    tft.print(percent,1);
-    tft.print("%");
-}
-
 void takeReading(){
-    beerScale.getBeerRemaining(&status, &activeKegSize);    
+    beerScale.getBeerRemaining(&status);
+    notifyClients(status);      
+    if (fabs(previousStatus.weight_lbs - status.weight_lbs) < 0.15f) return;
     
-    // Clear out Status text and update values
-    tft.fillRect(150, 0, tft.width() - 150, ROW_HEIGHT * 2, ILI9341_BLACK);
-
-    // Display weight
-    tft.setCursor(17, 6);
-    tft.setTextColor(ILI9341_BLUE);
-    tft.setTextSize(1);
-    tft.print("Approx Beer Remaining: ");
-    tft.print(status.weight_lbs, 2);
-    tft.println(" lbs");
-
-    // Display units
-    tft.setCursor(5, ROW_HEIGHT);
-    tft.setTextColor(ILI9341_BLUE);
-    tft.print("Approx Drinks Remaining: ");
-    tft.print(status.units_remain, 2);
-
-    // Draw Percent level shape for Gauge
-    draw_percent_2_GaugeY1(status.level_percent);
+    previousStatus = status;
+    updateScreenValues(&tft, status);
+    notifyClients(status);
 }
 
-void changeBeerLogo(){
+void drawBeerSelection(){
     Serial.println("Beer Logo hit");
     clearBeerLogo();
     displayScreen = CHANGE_LOGO;
@@ -341,63 +554,78 @@ void clearBeerLogo(){
   displayScreen = BLANK;
 }
 
+void copyFileToSPIFFS(const char* sdFilePath, const char* spiffsFilePath) {
+  // Open the file on the SD card
+  File32 sdFile = SD.open(sdFilePath, O_RDONLY);
+
+  if (sdFile) {
+    // Open a file on SPIFFS for writing
+    File spiffsFile = SPIFFS.open(spiffsFilePath, FILE_WRITE);
+
+    if (spiffsFile) {
+      // Copy data from SD file to SPIFFS file
+      while (sdFile.available()) {
+        spiffsFile.write(sdFile.read());
+      }
+
+      // Close both files
+      spiffsFile.close();
+      sdFile.close();
+    } else {
+      // Handle error opening SPIFFS file
+    }
+  } else {
+    // Handle error opening SD file
+  }
+}
+
 void loadBeerLogo(){
   if (sdCardPresent){
-    filenameLogo[5] = '0' + logoIndex;
+    filenameLogo[5] = '0' + logoIndex; //replace the index number in the filename string
+
+    /* If using SPIFFS
+      File file = SPIFFS.open(filenameLogo, "r");
+        if (file) {
+
+          // Skip BMP file header (14 bytes) and bitmap information header (40 bytes)
+          file.seek(54);
+          
+          // Calculate row size considering padding
+          int rowSize = (3 * LOGO_WIDTH + 3) & ~3;
+          
+          // Read pixel data into the array from bottom to top and left to right
+          for (int y = LOGO_HEIGHT - 1; y >= 0; --y) {
+            for (int x = 0; x < LOGO_WIDTH; ++x) {
+            uint8_t blue = file.read();
+            uint8_t green = file.read();
+            uint8_t red = file.read();
+
+            // Convert RGB888 to RGB565 format
+            uint16_t rgb565 = ((red & 0xF8) << 8) | ((green & 0xFC) << 3) | (blue >> 3);
+            
+            bmpLogoImage[y * LOGO_WIDTH + x] = rgb565;
+            }
+            // Skip any padding bytes at the end of the row
+            for (int p = 0; p < (rowSize - 3 * LOGO_WIDTH); ++p) {
+              file.read();
+            }
+          }
+
+          file.close();
+          Serial.println("BMP image loaded from SPIFFS");
+        } else {
+          Serial.println("Failed to open file for reading");
+        }
+      tft.drawRGBBitmap(LOGOx1,LOGOy1, bmpLogoImage, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
+    */  // End using SPIFFS
     reader.drawBMP(filenameLogo, tft, LOGOx1,LOGOy1);
   } else { // Embedded Logo
     tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
   }
+  //updateImageOnSPIFFS();
+  copyFileToSPIFFS(filenameLogo,"Logo.bmp");
   displayScreen = LOGO;
 }
-
-void paintCalScale(){
-  clearBeerLogo();
-  displayScreen = CALIBRATE_SCALE;
-  
-  // Tare button
-  drawTareButton();
-
-  // Calibrated Weight button
-  drawCalButton();
-
-  // Cancel Button
-  tft.fillRect(CANCEL_X, CANCEL_Y, BUTTON_W, BUTTON_H, ILI9341_RED);
-  tft.setCursor(CANCEL_X + 15, CANCEL_Y + (BUTTON_H / 2));
-  tft.setTextColor(ILI9341_WHITE);
-  tft.setTextSize(2);
-  tft.println("Cancel");
-
-  // Save Button
-  tft.fillRect(SAVE_X, SAVE_Y, BUTTON_W, BUTTON_H, ILI9341_DARKGREEN);
-  tft.setCursor(SAVE_X + 20, SAVE_Y + (BUTTON_H / 2));
-  tft.setTextColor(ILI9341_WHITE);
-  tft.setTextSize(2);
-  tft.println("SAVE");
-}
-
-void saveScaleParams(){
-  EEPROM.put(eep_add_offset, scaleOffset);
-  EEPROM.put(eep_add_divider, scaleDivider);
-  if(EEPROM.commit()){
-    Serial.print(">>>> Scale Values saved. Offset: ");
-    Serial.print(scaleOffset);
-    Serial.print(", Divider: ");
-    Serial.println(scaleDivider);
-  } else {
-    Serial.println("ERROR: Values not saved");
-  }
-  loadBeerLogo();
-}
-
-void readScaleParams(){
-  EEPROM.get(eep_add_offset, scaleOffset);
-  EEPROM.get(eep_add_divider,scaleDivider);
-  Serial.print("EEPROM Read>> Scale Offset: ");
-  Serial.print(scaleOffset);
-  Serial.print(", Divider: ");
-  Serial.println(scaleDivider);
-}  
 
 int getThumbnailIndexFromTouch(TS_Point p){
   int index = 0;
@@ -414,26 +642,13 @@ int getThumbnailIndexFromTouch(TS_Point p){
   return index;
 }
 
-void drawTareButton(int color){
-  tft.fillRect(TARE_X, TARE_Y, BUTTON_W, BUTTON_H, color);  
-  tft.setTextColor(ILI9341_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(50, TARE_Y - 20);
-  tft.println("Clear your scale,");
-  tft.println("Then push TARE button below");
-  tft.setCursor(TARE_X + 25, TARE_Y + (BUTTON_H / 2));
-  tft.setTextSize(2);
-  tft.println("TARE");
-}
-
-void drawCalButton(int color){
-  tft.fillRect(CAL_X, CAL_Y, BUTTON_W, BUTTON_H, color);
-  tft.setTextColor(ILI9341_WHITE);
-  tft.setTextSize(1);
-  tft.setCursor(50, CAL_Y - 20);
-  tft.println("Place 120lbs on scale,");
-  tft.println("Then push 120 lbs button below");
-  tft.setCursor(CAL_X + 10, CAL_Y + (BUTTON_H / 2));
-  tft.setTextSize(2);
-  tft.println("120 lbs");
+void saveFileToSDCard(const char* filename, const char* data, size_t len) {
+    File32 file = SD.open(filename, O_WRITE);
+    if (file) {
+        file.write(data, len);
+        file.close();
+        Serial.println("File saved to SD card successfully");
+    } else {
+        Serial.println("Error opening file on SD card");
+    }
 }

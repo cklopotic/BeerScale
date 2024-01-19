@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="BeerScale.css">
+    <script src="script.js"></script>
+    <title>Upload new Logo</title>
+</head>
+<body>
+    <div class="header"><H3>Upload new Logo</H3></div>
+    <div class="main">
+        <div class="upload">
+            <form action="/" method="POST">
+                <label for="mylogo">Select a logo bmp image:</label>
+                <input type="file" id="mylogo" name="mylogo" accept="image/bmp" onchange="loadLogo(event)">
+                <br>
+                <div><br>
+                    <img src="LogoTemplate.bmp" id="logoimg">
+                </div>
+                <br>
+                <label for="myThumb">Select a Thumbnail bmp image:</label>
+                <input type="file" id="myThumb" name="myThumb" accept="image/bmp" onchange="loadThumb(event)">
+                <br>
+                <div><br>
+                    <img src="ThumbTemplate.bmp" id="thumbimg">
+                </div>
+            </form>
+        </div>
+        
+        <br>
+        <p>Choose a storage Location</p>
+        <div class="thumbgrid">
+            <div><img src="Thumb1.bmp"></div>
+            <div><img src="Thumb2.bmp"></div>
+            <div><img src="Thumb3.bmp"></div>
+            <div><img src="Thumb4.bmp"></div>
+            <div><img src="Thumb5.bmp"></div>
+            <div><img src="Thumb6.bmp"></div>
+            <div><img src="Thumb7.bmp"></div>
+            <div><img src="Thumb8.bmp"></div>
+            <div><img src="Thumb9.bmp"></div>
+        </div>
+    </div>    
+    <div class="footer"></div>
+</body>
+</html>

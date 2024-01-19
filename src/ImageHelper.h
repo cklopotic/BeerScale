@@ -14,29 +14,16 @@
 //    tft.drawRGBBitmap(0, 0, image_name.pixel_data, image_name.width, image_name.height);
 //  See also https://forum.pjrc.com/threads/35575-Export-for-ILI9341_t3-with-GIMP
 
-#ifndef IMAGE_DATA_H
-#define IMAGE_DATA_H
+#ifndef IMAGE_HELPER_H
+#define IMAGE_HELPER_H
 
 #define BEER_LOGO_WIDTH 200
 #define BEER_LOGO_HEIGHT 280
-#define THUMB_W 66
-#define THUMB_H 92
-
-#define BUTTON_W 100
-#define BUTTON_H 50
-
-#define TARE_X 50
-#define TARE_Y 90
-#define CAL_X 50
-#define CAL_Y 190
-#define CANCEL_X 0
-#define CANCEL_Y 270
-#define SAVE_X 100
-#define SAVE_Y 270
 
 char filenameLogo[11] = "/Logo1.bmp";
 char filenameThumb[12] = "/Thumb1.bmp";
 int logoIndex=1;
+u_int16_t bmpLogoImage[BEER_LOGO_HEIGHT * BEER_LOGO_WIDTH];
 
 const PROGMEM uint16_t buschLightBMP[BEER_LOGO_HEIGHT * BEER_LOGO_WIDTH] = {
     0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,   // 0x0010 (16) pixels

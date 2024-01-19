@@ -1,0 +1,65 @@
+:root {
+    --percentRemain: 85;
+    --redSlide: 255;
+    --greenSlide: 255;
+    font-size: 14px;
+    }
+div {
+    border: 0px;
+  }
+
+.header,
+.footer {
+    margin: 5px;
+}
+.leftNav,
+.rightNav{
+    background-color: black;
+}
+
+.screen {
+    border: 1px solid rgb(22, 85, 94);
+    display: flex;
+    flex-wrap: wrap;
+    background-color: black;
+    color: blue;
+    width: 240px;
+    height: 320px;
+}
+.divTopTxt {    
+    width: 100%;
+    height: 40px;
+    padding-left: 2px;
+}
+.lowerContainer{
+    width: 100%;
+    height: 280px;
+}
+.logo {
+    float: left;
+    width: 200px;
+    height: 280px;
+}
+.PercentContainer {
+    float: right;
+    position: relative;
+    width: 40px;
+    height: 280px;
+}
+.barIndicator {
+    background-color: rgba(var(--redSlide),var(--greenSlide),0,1);
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: calc(var(--percentRemain) * 1%);
+}
+.thumbgrid {
+    display: grid;
+    gap: 5px;
+    grid-template-columns: 66px 66px 66px;
+    grid-template-rows: 92px 92px 92px;
+}
+.upload {
+    display: flex;
+}

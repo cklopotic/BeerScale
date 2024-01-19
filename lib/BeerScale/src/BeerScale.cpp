@@ -6,10 +6,17 @@
 
 #include "BeerScale.h"
 #include <HX711.h>
+#include <EEPROM.h>
 
-void BeerScale::init(uint8_t dataPin, uint8_t clockPin)
-{
+void BeerScale::init(uint8_t dataPin, uint8_t clockPin, int eep_add_offset, int eep_add_divider, int eep_add_kegSizeIndex){
   _scale.begin(dataPin, clockPin);
+  _eep_add_divider = eep_add_divider;
+  _eep_add_offset = eep_add_offset;
+  _eep_add_kegSizeIndex = eep_add_kegSizeIndex;
+  readScaleParams();
+  set_offset(_offset);
+  set_scale(_divider);
+  getKegSize();
 }
 
 bool BeerScale::set_scale(float divider){
@@ -38,13 +45,57 @@ float BeerScale::getUnitWeight(){
   return _unitWeight;
 }
 
-void BeerScale::getBeerRemaining(BeerStatus_t * pBeerStatus, KegSize_t * pActiveKegSize){
+void BeerScale::getBeerRemaining(BeerStatus_t * pBeerStatus){
   if (_scale.wait_ready_timeout(1000)) {
     getUnitWeight();
-    pBeerStatus->weight_lbs = _unitWeight - pActiveKegSize->emptyWeight; //subtract off the weight of the keg to get the weight of the beer
-    pBeerStatus->level_percent = (pBeerStatus->weight_lbs / (pActiveKegSize->fullWeight - pActiveKegSize->emptyWeight)) * 100;
+    pBeerStatus->weight_lbs = _unitWeight - _kegSize.emptyWeight; //subtract off the weight of the keg to get the weight of the beer
+    float calculated_percent = (pBeerStatus->weight_lbs / (_kegSize.fullWeight - _kegSize.emptyWeight)) * 100;
+    pBeerStatus->level_percent = constrain(calculated_percent, 0.0, 100.0);
     pBeerStatus->units_remain = (pBeerStatus->weight_lbs * OZ_PER_LB / OZ_PER_UNIT);
+    Serial.print("KegSize MT weight:");
+    Serial.println(_kegSize.emptyWeight);
   } else {
       printf("HX711 not found.\n");
   }
-};
+}
+
+void BeerScale::saveScaleParams(){
+  EEPROM.put(_eep_add_offset, _offset);
+  EEPROM.put(_eep_add_divider, _divider);
+  if(EEPROM.commit()){
+    Serial.print(">>>> Scale Values saved. Offset: ");
+    Serial.print(_offset);
+    Serial.print(", Divider: ");
+    Serial.println(_divider);
+  } else {
+    Serial.println("ERROR: Values not saved");
+  }
+}
+
+void BeerScale::readScaleParams(){
+  EEPROM.get(_eep_add_offset, _offset);
+  EEPROM.get(_eep_add_divider,_divider);
+  EEPROM.get(_eep_add_kegSizeIndex,_kegSelection); //selectionIndex
+  _kegSelection = constrain(_kegSelection,0,9);
+  //_kegSelection = 0;
+  _kegSize = KegSelections[_kegSelection];  //set the KegSize using Index
+
+  Serial.print("EEPROM Read>> Scale Offset: ");
+  Serial.print(_offset);
+  Serial.print(", Divider: ");
+  Serial.print(_divider);
+  Serial.print(", KegSize Index: ");
+  Serial.println(_kegSelection);
+}  
+
+KegSize_t BeerScale::getKegSize(){
+  return _kegSize;
+}
+
+void BeerScale::setKegSize(int kegsizeIndex){
+  _kegSelection = kegsizeIndex;
+  _kegSize = KegSelections[_kegSelection];
+  EEPROM.put(_eep_add_kegSizeIndex,_kegSelection);
+}
+
+;
