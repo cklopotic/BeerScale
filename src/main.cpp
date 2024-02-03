@@ -15,6 +15,7 @@
 #include <Adafruit_ImageReader.h> // Image-reading functions
 #include <Adafruit_FT6206.h>
 #include "ImageHelper.h"
+#include <Preferences.h>
 
 //Wifi setup
 AsyncWebServer server(80);
@@ -37,6 +38,15 @@ const char* ssidPath = "/ssid.txt";
 const char* passPath = "/pass.txt";
 const char* ipPath = "/ip.txt";
 const char* gatewayPath = "/gateway.txt";
+
+//ssid max 32 characters
+//pass max 63 characters
+//IP address max 15 characters
+//gateway max 15 characters
+
+
+//https://randomnerdtutorials.com/esp32-save-data-permanently-preferences/
+Preferences preferences;
 
 IPAddress localIP;
 //IPAddress localIP(192, 168, 1, 200); // hardcoded
@@ -250,13 +260,15 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Startup Initiated");
   
+  preferences.begin("beer-app", false);
+
   initSPIFFS();
   
-  // Load values saved in SPIFFS
-  ssid = readFile(SPIFFS, ssidPath);
-  pass = readFile(SPIFFS, passPath);
-  ip = readFile(SPIFFS, ipPath);
-  gateway = readFile (SPIFFS, gatewayPath);
+  ssid = preferences.getString("ssid");
+  pass = preferences.getString("pass");
+  ip = preferences.getString("ip");
+  gateway = preferences.getString("gateway");
+
   Serial.println(ssid);
   //Serial.println(pass);
   Serial.println(ip);
@@ -324,6 +336,7 @@ void setup() {
     
     server.on("/", HTTP_POST, [](AsyncWebServerRequest *request) {
       int params = request->params();
+      preferences.begin("beer-app", false);
       for(int i=0;i<params;i++){
         AsyncWebParameter* p = request->getParam(i);
         if(p->isPost()){
@@ -333,7 +346,7 @@ void setup() {
             Serial.print("SSID set to: ");
             Serial.println(ssid);
             // Write file to save value
-            writeFile(SPIFFS, ssidPath, ssid.c_str());
+            preferences.putString("ssid", ssid.c_str());
           }
           // HTTP POST pass value
           if (p->name() == PARAM_INPUT_2) {
@@ -341,7 +354,7 @@ void setup() {
             Serial.print("Password set to: ");
             Serial.println(pass);
             // Write file to save value
-            writeFile(SPIFFS, passPath, pass.c_str());
+            preferences.putString("pass", pass.c_str());
           }
           // HTTP POST ip value
           if (p->name() == PARAM_INPUT_3) {
@@ -349,7 +362,7 @@ void setup() {
             Serial.print("IP Address set to: ");
             Serial.println(ip);
             // Write file to save value
-            writeFile(SPIFFS, ipPath, ip.c_str());
+            preferences.putString("ip", ip.c_str());
           }
           // HTTP POST gateway value
           if (p->name() == PARAM_INPUT_4) {
@@ -357,11 +370,12 @@ void setup() {
             Serial.print("Gateway set to: ");
             Serial.println(gateway);
             // Write file to save value
-            writeFile(SPIFFS, gatewayPath, gateway.c_str());
+            preferences.putString("gateway", gateway.c_str());
           }
           //Serial.printf("POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
         }
       }
+      preferences.end();
       request->send(200, "text/plain", "Done. ESP will restart, connect to your router and go to IP address: " + ip);
       delay(3000);
       ESP.restart();
@@ -372,8 +386,12 @@ void setup() {
 
   Serial.println("Reading Saved Settings");
   // Read saved settings
+  logoIndex = preferences.getInt("logoIndex", 1);
+  preferences.end();
+
   EEPROM.begin(EEPROM_SIZE);
   EEPROM.get(eep_add_logoIndex, logoIndex);
+  
   constrain(logoIndex,1,9);
     
   // Setup SD card
@@ -492,6 +510,9 @@ void loop() {
           if (logoIndex != index){
             logoIndex = index;
             EEPROM.put(eep_add_logoIndex, logoIndex);
+            preferences.begin("beer-app", false);
+            preferences.putInt("logoIndex", logoIndex);
+            preferences.end();
             //TODO: allow for different keg sizes.
             beerScale.setKegSize(0); //fixed size to a half barrel
             if(EEPROM.commit()){
@@ -622,8 +643,7 @@ void loadBeerLogo(){
   } else { // Embedded Logo
     tft.drawRGBBitmap(LOGOx1,LOGOy1, buschLightBMP, BEER_LOGO_WIDTH, BEER_LOGO_HEIGHT);
   }
-  //updateImageOnSPIFFS();
-  copyFileToSPIFFS(filenameLogo,"Logo.bmp");
+  copyFileToSPIFFS(filenameLogo,"/Logo.bmp");
   displayScreen = LOGO;
 }
 

@@ -7,6 +7,9 @@
 #include "BeerScale.h"
 #include <HX711.h>
 #include <EEPROM.h>
+#include <Preferences.h>
+
+Preferences scalePreferences;
 
 void BeerScale::init(uint8_t dataPin, uint8_t clockPin, int eep_add_offset, int eep_add_divider, int eep_add_kegSizeIndex){
   _scale.begin(dataPin, clockPin);
@@ -70,12 +73,34 @@ void BeerScale::saveScaleParams(){
   } else {
     Serial.println("ERROR: Values not saved");
   }
+
+  scalePreferences.begin("BeerScale", false);
+  scalePreferences.putLong("offset", _offset);
+  scalePreferences.putFloat("divider", _divider);
+  scalePreferences.end();
+  
 }
 
 void BeerScale::readScaleParams(){
   EEPROM.get(_eep_add_offset, _offset);
   EEPROM.get(_eep_add_divider,_divider);
   EEPROM.get(_eep_add_kegSizeIndex,_kegSelection); //selectionIndex
+
+
+
+  scalePreferences.begin("BeerScale", false);
+  /*
+  _offset = scalePreferences.getLong("offset", 0);
+  _divider = scalePreferences.getFloat("divider", 1.0);
+  _kegSelection = scalePreferences.getInt("kegSelection", 0);
+  */
+  //one time run to transfer EEPROM to preferences values
+  scalePreferences.putLong("offset", _offset);
+  scalePreferences.putFloat("divider", _divider);
+  scalePreferences.putInt("kegSelection", _kegSelection);
+  //end one time transfer
+  scalePreferences.end();
+
   _kegSelection = constrain(_kegSelection,0,9);
   //_kegSelection = 0;
   _kegSize = KegSelections[_kegSelection];  //set the KegSize using Index
@@ -96,6 +121,10 @@ void BeerScale::setKegSize(int kegsizeIndex){
   _kegSelection = kegsizeIndex;
   _kegSize = KegSelections[_kegSelection];
   EEPROM.put(_eep_add_kegSizeIndex,_kegSelection);
+  
+  scalePreferences.begin("BeerScale", false);
+  scalePreferences.putInt("kegSelection", _kegSelection);
+  scalePreferences.end();
 }
 
 ;
