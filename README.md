@@ -1,6 +1,8 @@
 # :beer: Beer Scale :beer:
 This has a small 2.8" TFT display with a capactivie touch screen that can be embedded into a beer tap handle.  Coupled with a digital scale (some load cells with a HX711 controller) to let you know how much beer is left in the keg.
 
+![alt text](https://github.com/cklopotic/BeerScale/blob/main/pictures/Screen%20In%20Tap%20handle.jpg?raw=true)
+
 - SD card contents - Format to either FAT16 or FAT32
     -BMPs to be in 24bit format, can follow templates or provided examples
     -The larger LOGO image is the image used for the main run time display. The Thumb image is for a preview to select when switching logos
