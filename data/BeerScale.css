@@ -63,3 +63,8 @@ div {
 .upload {
     display: flex;
 }
+
+.thumb-div {
+    border-color: black;
+    margin: 1px;
+}

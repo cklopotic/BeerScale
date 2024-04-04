@@ -419,7 +419,7 @@ void setup() {
   // Load logo image
   loadBeerLogo();
   
-  timed_event = 2000; // after 1000 ms trigger the event
+  timed_event = 2000; // after 2000 ms trigger the event
   current_time = millis();
   start_time = current_time;
   Serial.println("Startup Completed!");
@@ -429,6 +429,8 @@ void setup() {
 void loop() {
   ws.cleanupClients();
   current_time = millis(); // update the timer every cycle
+  unsigned long prev_time = current_time;
+  const unsigned long networkTimeout = 30000;
   
   //Look for touches on screen
   if (ts.touched())
@@ -532,6 +534,14 @@ void loop() {
     takeReading();
     start_time = current_time;  // reset the timer
   }
+  //check if network connectivity is lost, if it has, try to reconnect.
+  if ((WiFi.status() != WL_CONNECTED) && (current_time - prev_time >= networkTimeout)){
+      WiFi.disconnect();
+      WiFi.reconnect();
+      prev_time = current_time;
+
+  }
+  
 }
 
 // Function implementations
