@@ -549,7 +549,6 @@ void takeReading(){
     beerScale.getBeerRemaining(&status);
     notifyClients(status);      
     if (fabs(previousStatus.weight_lbs - status.weight_lbs) < 0.15f) return;
-    
     previousStatus = status;
     updateScreenValues(&tft, status);
     notifyClients(status);
